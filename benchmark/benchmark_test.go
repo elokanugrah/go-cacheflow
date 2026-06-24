@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,8 +18,6 @@ type benchUser struct {
 }
 
 func BenchmarkRemember_CacheHit(b *testing.B) {
-
-
 	cf := cacheflow.New()
 	ctx := context.Background()
 
@@ -126,3 +125,71 @@ func BenchmarkSet(b *testing.B) {
 		_ = cacheflow.Set(ctx, cf, "bench:set", user, time.Minute)
 	}
 }
+
+// BenchmarkStampede_NoSingleFlight simulates 1000 concurrent requests
+// WITHOUT any SingleFlight deduplication. Every goroutine calls the loader
+// independently. This demonstrates the "naive" cache-aside approach where
+// all concurrent cache misses result in separate database calls.
+func BenchmarkStampede_NoSingleFlight(b *testing.B) {
+	ctx := context.Background()
+	loader := func(ctx context.Context) (benchUser, error) {
+		time.Sleep(10 * time.Millisecond) // simulate db latency
+		return benchUser{Name: "Stampede", Age: 30, Email: "stampede@example.com"}, nil
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var wg sync.WaitGroup
+		var loaderCalls atomic.Int32
+		const concurrency = 1000
+		wg.Add(concurrency)
+
+		for j := 0; j < concurrency; j++ {
+			go func() {
+				defer wg.Done()
+				loaderCalls.Add(1)
+				_, _ = loader(ctx) // No deduplication — every goroutine calls the loader
+			}()
+		}
+		wg.Wait()
+
+		b.ReportMetric(float64(loaderCalls.Load()), "loader_calls/op")
+	}
+}
+
+// BenchmarkStampede_WithSingleFlight simulates 1000 concurrent requests
+// WITH Go-CacheFlow's built-in SingleFlight deduplication. Only one goroutine
+// calls the loader; all others share the result. This demonstrates the
+// stampede prevention that Go-CacheFlow provides out of the box.
+func BenchmarkStampede_WithSingleFlight(b *testing.B) {
+	cf := cacheflow.New()
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var wg sync.WaitGroup
+		var loaderCalls atomic.Int32
+		const concurrency = 1000
+		wg.Add(concurrency)
+
+		for j := 0; j < concurrency; j++ {
+			go func() {
+				defer wg.Done()
+				_, _ = cacheflow.Remember(ctx, cf, "stampede:cmp", time.Minute,
+					func(ctx context.Context) (benchUser, error) {
+						loaderCalls.Add(1)
+						time.Sleep(10 * time.Millisecond) // simulate db latency
+						return benchUser{Name: "Stampede", Age: 30, Email: "stampede@example.com"}, nil
+					},
+				)
+			}()
+		}
+		wg.Wait()
+
+		b.ReportMetric(float64(loaderCalls.Load()), "loader_calls/op")
+
+		// Clean up so next iteration starts fresh
+		_ = cacheflow.Delete(ctx, cf, "stampede:cmp")
+	}
+}
+

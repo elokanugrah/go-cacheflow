@@ -315,3 +315,73 @@ func TestRemember_ConcurrentDelete(t *testing.T) {
 
 	wg.Wait()
 }
+
+// TestRemember_ErrorPropagationStress verifies that when a loader fails during
+// a cache stampede, the error is correctly propagated to ALL concurrent waiters.
+//
+// It also verifies that:
+//   - No waiter receives a stale or zero value on error.
+//   - The error is NOT cached — a subsequent call retries the loader and succeeds.
+func TestRemember_ErrorPropagationStress(t *testing.T) {
+	cf := New()
+	ctx := context.Background()
+
+	loaderErr := errors.New("database unavailable")
+	var loaderCount atomic.Int32
+	var wg sync.WaitGroup
+
+	const goroutines = 500
+	wg.Add(goroutines)
+
+	errs := make([]error, goroutines)
+	results := make([]testUser, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			results[idx], errs[idx] = Remember(ctx, cf, "err:stampede", time.Minute,
+				func(ctx context.Context) (testUser, error) {
+					loaderCount.Add(1)
+					time.Sleep(50 * time.Millisecond) // simulate slow failure
+					return testUser{}, loaderErr
+				},
+			)
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Assert: loader called exactly once (SingleFlight deduplication on error path)
+	count := loaderCount.Load()
+	if count != 1 {
+		t.Errorf("loader called %d times, want 1 (SingleFlight should deduplicate even on error)", count)
+	}
+
+	// Assert: ALL goroutines received the same error
+	for i := 0; i < goroutines; i++ {
+		if !errors.Is(errs[i], loaderErr) {
+			t.Errorf("goroutine %d error = %v, want %v", i, errs[i], loaderErr)
+		}
+		// Assert: no goroutine received a populated value
+		if results[i] != (testUser{}) {
+			t.Errorf("goroutine %d result = %+v, want zero value on error", i, results[i])
+		}
+	}
+	t.Logf("All %d goroutines received identical error: %v", goroutines, loaderErr)
+
+	// Assert: error was NOT cached — subsequent call retries the loader and succeeds
+	successUser := testUser{Name: "Recovered", Age: 1}
+	result, err := Remember(ctx, cf, "err:stampede", time.Minute,
+		func(ctx context.Context) (testUser, error) {
+			return successUser, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("retry after error: unexpected error: %v", err)
+	}
+	if result != successUser {
+		t.Errorf("retry result = %+v, want %+v", result, successUser)
+	}
+	t.Log("Retry after error succeeded — error was not cached")
+}
+
