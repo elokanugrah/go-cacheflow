@@ -1,110 +1,114 @@
-# Go-CacheFlow
+# CacheFlow
 
 [![CI](https://github.com/elokanugrah/go-cacheflow/actions/workflows/ci.yml/badge.svg)](https://github.com/elokanugrah/go-cacheflow/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/elokanugrah/go-cacheflow)](https://goreportcard.com/report/github.com/elokanugrah/go-cacheflow)
 [![Go Reference](https://pkg.go.dev/badge/github.com/elokanugrah/go-cacheflow.svg)](https://pkg.go.dev/github.com/elokanugrah/go-cacheflow)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Go-CacheFlow is an opinionated, production-grade cache orchestration library for Go that makes cache-aside implementation simple, safe, and robust through a single `Remember()` API with built-in SingleFlight deduplication.
+Go-CacheFlow is a cache-aside orchestration library for Go that simplifies cache retrieval, population, and stampede prevention through a single `Remember()` API.
+
+Instead of repeatedly writing cache lookup, cache miss handling, database loading, cache population, and stampede prevention logic, CacheFlow provides a unified abstraction focused on one thing:
+
+> **Retrieve from cache if available, otherwise load once, cache it, and return it safely.**
 
 ---
 
-## Why Go-CacheFlow?
+## Why CacheFlow?
 
-Caching is simple in theory, but implementing it correctly in production is hard. A typical "cache-aside" implementation often looks like this:
+Cache-aside is one of the most common caching patterns in backend systems.
+
+Unfortunately, the implementation is often repetitive and error-prone.
+
+Without CacheFlow:
 
 ```go
-// 🛑 Verbose, boilerplate-heavy, and vulnerable to cache stampedes
-val, err := redisClient.Get(ctx, "user:123").Result()
+userJSON, err := redis.Get(ctx, key)
+
 if err == redis.Nil {
-    // 1000 concurrent requests will hit the DB at the exact same time! (Cache Stampede)
-    user, err := db.GetUser(ctx, 123)
+    user, err := repo.GetByID(ctx, id)
     if err != nil {
-        return nil, err
+        return User{}, err
     }
-    
-    bytes, _ := json.Marshal(user)
-    redisClient.Set(ctx, "user:123", bytes, time.Minute)
+
+    payload, _ := json.Marshal(user)
+
+    redis.Set(ctx, key, payload, time.Minute)
+
     return user, nil
-} else if err != nil {
-    return nil, err
 }
 
 var user User
-json.Unmarshal([]byte(val), &user)
-return &user, nil
+json.Unmarshal([]byte(userJSON), &user)
+
+return user, nil
 ```
 
-With **Go-CacheFlow**, the entire flow is consolidated into a single, type-safe, stampede-proof call:
+Now imagine maintaining this pattern across dozens of services and hundreds of endpoints.
+
+With CacheFlow:
 
 ```go
-// ✅ Clean, generic-first, and stampede-proof
-user, err := cacheflow.Remember(ctx, cf, "user:123", time.Minute, func(ctx context.Context) (User, error) {
-    return db.GetUser(ctx, 123)
-})
+user, err := cacheflow.Remember(
+    ctx,
+    cache,
+    "user:123",
+    time.Minute,
+    func(ctx context.Context) (User, error) {
+        return repo.GetByID(ctx, 123)
+    },
+)
 ```
 
-By leveraging built-in **SingleFlight deduplication**, Go-CacheFlow guarantees that under massive concurrent traffic, **only one database call** is made to fetch the data. All other concurrent requests wait for the first execution and receive the identical result.
+That's it.
 
----
+CacheFlow handles:
 
-## How It Works
-
-Go-CacheFlow acts as a smart orchestration layer between your application code, your cache backend, and your data source (database/API):
-
-```text
-Request for Key
-      ↓
-┌───────────┐
-│ Cache Hit │ ── Yes ──> Return Value (Fast Path)
-└───────────┘
-      │ No
-      ↓
-┌──────────────┐
-│ SingleFlight │ ── Joined by concurrent waiters
-└──────────────┘
-      │ (First request only)
-      ↓
-┌──────────────┐
-│ Call Loader  │ ──> Fetches from DB / external API
-└──────────────┘
-      │
-      ├─ Success ─> [Save to Cache] ─> Return Value to all waiters
-      │
-      └─ Failure ─> [Skip Caching]  ─> Propagate Error to all waiters
-```
+- Cache lookup
+- Cache miss detection
+- Serialization
+- Cache population
+- SingleFlight deduplication
+- Stampede prevention
 
 ---
 
 ## Features
 
-- **Simplest Cache-aside pattern**: Retrieve or fetch-and-store in one call.
-- **Prevent Cache Stampedes**: Built-in, transparent SingleFlight deduplication for concurrent requests fetching the same key.
-- **Generic-first API**: Type-safe cache retrieval and persistence out of the box.
-- **Flexible DX Options**: Choose package-level generic functions or clean type-level wrappers.
-- **Interchangeable Backends**: Out-of-the-box support for in-memory and Redis stores.
+### Cache-Aside Orchestration
 
----
+Simplify cache lookup and population into a single operation.
 
-## Supported Stores
+### Built-in Stampede Protection
 
-Go-CacheFlow defines a simple, backend-agnostic storage boundary interface (`store.Store`). The following storage adapters are supported out of the box:
+Concurrent requests for the same missing key are automatically deduplicated using SingleFlight.
 
-- **MemoryStore** (`store/memory`): Thread-safe in-memory cache using a native Go map under a `sync.RWMutex`.
-- **RedisStore** (`store/redis`): Distributed caching backend powered by [go-redis/v9](https://github.com/redis/go-redis).
+### Generic Type-Safe API
 
-To configure a custom store:
-```go
-import (
-    "github.com/elokanugrah/go-cacheflow"
-    "github.com/elokanugrah/go-cacheflow/store"
-    "github.com/redis/go-redis/v9"
-)
+Use native Go generics without manual serialization boilerplate.
 
-rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-cf := cacheflow.New(
-    cacheflow.WithStore(store.NewRedisStore(rdb)),
-)
-```
+### Typed Wrapper API
+
+Cleaner developer experience for repeated operations on the same type.
+
+### Multiple Store Backends
+
+- Memory Store
+- Redis Store
+
+### Pluggable Serialization Layer
+
+Serializer abstraction allows future extensions beyond JSON.
+
+### Deterministic Error Contract
+
+Clear and predictable error behavior.
+
+### Production Ready
+
+- Race-tested
+- 100% test coverage
+- CI validated
+- ADR documented
 
 ---
 
@@ -123,126 +127,457 @@ package main
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 	"time"
 
 	"github.com/elokanugrah/go-cacheflow"
 )
 
 type User struct {
-	ID   int    `json:"id"`
-	Name string `json:"name"`
-}
-
-// UserRepository simulates a real-world database repository
-type UserRepository struct {
-	db *sql.DB
-}
-
-func (r *UserRepository) GetByID(ctx context.Context, id int) (User, error) {
-	// Simulated database query or API call
-	return User{ID: id, Name: "Alice"}, nil
+	ID   int
+	Name string
 }
 
 func main() {
-	// 1. Initialize Go-CacheFlow (uses memory store by default)
-	cf := cacheflow.New()
+	cache := cacheflow.New()
 	ctx := context.Background()
-	userRepo := &UserRepository{}
 
-	// 2. Remember: Fetch from cache, or fallback to loader and cache it automatically.
-	// Built-in SingleFlight guarantees only 1 call to GetByID under concurrent stampedes.
-	user, err := cacheflow.Remember(ctx, cf, "user:123", time.Minute, func(ctx context.Context) (User, error) {
-		return userRepo.GetByID(ctx, 123)
-	})
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("Fetched user: %+v\n", user)
+	user, err := cacheflow.Remember(
+		ctx,
+		cache,
+		"user:1",
+		time.Minute,
+		func(ctx context.Context) (User, error) {
+			return User{
+				ID:   1,
+				Name: "Alice",
+			}, nil
+		},
+	)
 
-	// 3. Or use Typed wrapper for clean, type-safe caching of a specific entity
-	userCache := cacheflow.Typed[User](cf)
-	user, err = userCache.Remember(ctx, "user:123", time.Minute, func(ctx context.Context) (User, error) {
-		return userRepo.GetByID(ctx, 123)
-	})
+	_ = user
+	_ = err
 }
 ```
 
 ---
 
-## Running the Examples
+## How It Works
 
-Go-CacheFlow contains executable examples in the `example/` directory.
+```mermaid
+flowchart TD
 
-### Basic Memory Example
+    A[Request]
+    B[cacheflow.Remember()]
+    C[Cache Lookup]
+
+    D[Cache Hit]
+    E[Cache Miss]
+
+    F[SingleFlight]
+    G[Loader]
+    H[Cache Set]
+
+    I[Return Value]
+
+    A --> B
+    B --> C
+
+    C --> D
+    C --> E
+
+    D --> I
+
+    E --> F
+    F --> G
+    G --> H
+    H --> I
+```
+
+### Request Lifecycle
+
+1. CacheFlow checks the cache.
+2. If the key exists, the cached value is returned.
+3. If the key is missing:
+   - SingleFlight ensures only one loader executes.
+   - The loader retrieves the data.
+   - The value is stored in cache.
+   - All waiting callers receive the same result.
+
+---
+
+## Architecture Overview
+
+CacheFlow acts as a cache orchestration layer between your application and cache backends.
+
+![Architecture Overview](docs/images/architecture-overview.png)
+
+### Core Components
+
+#### CacheFlow
+
+Coordinates cache retrieval, loading, storage, and concurrency control.
+
+#### Serializer
+
+Responsible for converting values to and from raw bytes.
+
+Current implementation:
+
+- JSON Serializer
+
+#### SingleFlight
+
+Prevents cache stampedes by ensuring only one concurrent loader execution per key.
+
+#### Store
+
+Abstracts cache backends behind a simple interface.
+
+Supported implementations:
+
+- MemoryStore
+- RedisStore
+
+---
+
+## Stampede Protection
+
+One of the primary goals of CacheFlow is preventing cache stampedes.
+
+Without SingleFlight:
+
+```text
+1000 Requests
+      │
+      ▼
+ Cache Miss
+      │
+      ▼
+1000 Loader Calls
+      │
+      ▼
+ Database Overload
+```
+
+With CacheFlow:
+
+```text
+1000 Requests
+      │
+      ▼
+ Cache Miss
+      │
+      ▼
+ SingleFlight
+      │
+      ▼
+ 1 Loader Call
+      │
+      ▼
+1000 Responses
+```
+
+This significantly reduces backend pressure during cache misses.
+
+---
+
+## Real World Example
+
+```go
+type User struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+type UserRepository interface {
+	GetByID(ctx context.Context, id int) (User, error)
+}
+
+func GetUser(
+	ctx context.Context,
+	cache cacheflow.Cache,
+	repo UserRepository,
+	id int,
+) (User, error) {
+
+	key := fmt.Sprintf("user:%d", id)
+
+	return cacheflow.Remember(
+		ctx,
+		cache,
+		key,
+		5*time.Minute,
+		func(ctx context.Context) (User, error) {
+			return repo.GetByID(ctx, id)
+		},
+	)
+}
+```
+
+---
+
+## Typed Wrapper API
+
+For services repeatedly working with the same type, a typed wrapper can reduce verbosity.
+
+```go
+users := cacheflow.Typed[User](cache)
+
+user, err := users.Remember(
+	ctx,
+	"user:123",
+	time.Minute,
+	func(ctx context.Context) (User, error) {
+		return repo.GetByID(ctx, 123)
+	},
+)
+```
+
+---
+
+## Supported Stores
+
+### Memory Store
+
+```go
+cache := cacheflow.New()
+```
+
+Ideal for:
+
+- Local development
+- Unit tests
+- Single-instance applications
+
+---
+
+### Redis Store
+
+```go
+client := redis.NewClient(&redis.Options{
+	Addr: "localhost:6379",
+})
+
+store := redisstore.New(client)
+
+cache := cacheflow.NewWithStore(store)
+```
+
+Ideal for:
+
+- Distributed systems
+- Horizontal scaling
+- Shared cache infrastructure
+
+---
+
+## Running Examples
+
+### Memory Example
+
 ```bash
 go run ./example/basic
 ```
 
 ### Redis Example
-The Redis example expects a Redis instance running at `localhost:6379`. You can spin one up using Docker:
+
+Start Redis:
+
 ```bash
-docker run -d --name cacheflow-redis -p 6379:6379 redis
+docker run -d \
+  --name cacheflow-redis \
+  -p 6379:6379 \
+  redis
+```
+
+Run example:
+
+```bash
 go run ./example/redis
 ```
 
 ---
 
-## Performance
+## Benchmarks
 
-The following benchmarks were run on Go 1.25 on a standard development machine (`AMD Ryzen 7 4800H`):
+Run benchmarks locally:
 
-| Benchmark Scenario | Operations | Time | Memory / Op | Allocations / Op |
-|---|---|---|---|---|
-| `Get (Cache Hit)` | 1,000,000 | **1.20 µs / op** | 296 B / op | 7 allocs / op |
-| `Remember (Cache Hit)` | 1,000,000 | **1.14 µs / op** | 296 B / op | 7 allocs / op |
-| `Remember (Cache Miss)` | 529,345 | **2.68 µs / op** | 843 B / op | 13 allocs / op |
-| `Remember (SingleFlight)` | 4,103,275 | **0.28 µs / op** | 287 B / op | 7 allocs / op |
-| `Set (Cache Write)` | 2,822,770 | **0.37 µs / op** | 112 B / op | 2 allocs / op |
+```bash
+go test -bench=. -benchmem ./benchmark/...
+```
 
-### Concurrency & Stampede Resistance
-We simulated a massive cache stampede with **1,000 concurrent goroutines** querying the same expired key with a **10ms database latency penalty**:
+### Stampede Comparison
 
-- **Without SingleFlight**: All 1,000 requests hit the database simultaneously, incurring significant database connection overhead, query latency, and resource starvation.
-- **With Go-CacheFlow**: Only **1** loader execution was triggered. The remaining 999 goroutines shared the exact same fetched result. The benchmark completes in **~11 ms** total (the single database latency + tiny framework overhead).
+```text
+1000 Concurrent Requests
+
+Without SingleFlight:
+1000 loader calls
+
+With CacheFlow:
+1 loader call
+```
+
+### Sample Results
+
+```text
+BenchmarkRemember_CacheHit
+BenchmarkRemember_CacheMiss
+BenchmarkRemember_SingleFlight
+BenchmarkStampede_NoSingleFlight
+BenchmarkStampede_WithSingleFlight
+```
+
+Benchmark numbers may vary depending on hardware.
 
 ---
 
-
 ## Error Handling
 
-Go-CacheFlow has a deterministic error contract designed to make your applications resilient.
+CacheFlow follows a deterministic error contract.
 
 ### Detecting Cache Misses
-A cache miss returns `store.ErrCacheMiss` (also re-exported as `cacheflow.ErrCacheMiss`). Always check using `errors.Is`:
+
 ```go
-val, err := cacheflow.Get[User](ctx, cf, "user:123")
+value, err := cacheflow.Get[User](
+	ctx,
+	cache,
+	"user:123",
+)
+
 if errors.Is(err, cacheflow.ErrCacheMiss) {
-    // Key does not exist or has expired
+	// key not found
 }
 ```
+
+---
 
 ### Error Sources
 
 | Source | When | Behavior |
-|---|---|---|
-| **Cache miss** (`ErrCacheMiss`) | Key not found or expired | Returned from `Get`. In `Remember`, triggers the loader instead. |
-| **Loader error** | Loader function returns an error | Error is propagated directly to all waiting callers. **Not cached.** Subsequent requests retry the loader. |
-| **Serializer error** | `Marshal` or `Unmarshal` fails | Returned directly. For example, storing an unmarshalable type or reading corrupted cache data. |
-| **Store error** | Backend connection or command failure | Returned directly. For example, Redis connection refused or context cancelled. |
+|----------|----------|----------|
+| ErrCacheMiss | Key missing or expired | Returned by Get(). Remember() invokes loader instead |
+| Loader Error | Loader returns error | Propagated directly, never cached |
+| Serializer Error | Marshal/Unmarshal failure | Returned directly |
+| Store Error | Backend failure | Returned directly |
 
-### Loader Error Behavior in `Remember()`
-- Cache hit → cached value returned, loader is never called.
-- Cache miss → loader is called via SingleFlight.
-  - Loader succeeds → value is cached and returned.
-  - Loader fails → error is **propagated directly** to the caller(s) and is **not cached**.
-- In stampede scenarios, if the single loader call fails, the error is broadcast to all waiting concurrent callers.
+---
+
+### Loader Error Behavior
+
+```text
+Cache Hit
+    │
+    ▼
+ Return
+
+Cache Miss
+    │
+    ▼
+ Loader
+    │
+    ├── Success
+    │      │
+    │      ▼
+    │    Cache
+    │      │
+    │      ▼
+    │    Return
+    │
+    └── Error
+           │
+           ▼
+        Return Error
+```
 
 ### Error Propagation Rules
-- All errors are returned **directly** (unwrapped). Use `errors.Is` to match sentinel errors.
-- If caching fails (store write error) after the loader succeeds, the loaded value is **still returned** to the caller. The data is not lost — it just wasn't cached.
+
+- Errors are returned directly.
+- Use `errors.Is()` for sentinel errors.
+- Loader errors are never cached.
+- Store errors are returned immediately.
+- Serializer errors are returned immediately.
+- Cache write failures do not discard successfully loaded data.
+- If the loader succeeds but cache persistence fails, the value is still returned to the caller.
+
+---
+
+## Testing
+
+Run all tests:
+
+```bash
+go test -race -cover ./...
+```
+
+Coverage report:
+
+```bash
+go test -coverprofile=coverage.out ./...
+go tool cover -func=coverage.out
+```
+
+Current project status:
+
+- 67 Tests
+- 100% Coverage
+- Race Detector Clean
+- CI Verified
+
+---
+
+## Architecture Decision Records (ADR)
+
+Significant design decisions are documented in the `adr/` directory.
+
+Current ADRs:
+
+| ADR | Description |
+|------|------------|
+| ADR-0001 | Store operates on raw bytes |
+| ADR-0002 | TTL zero means no expiration |
+| ADR-0003 | Lazy expiration strategy |
+| ADR-0004 | Generic API and Typed Wrapper |
+| ADR-0005 | SingleFlight strategy |
+| ADR-0006 | Cache interface boundary |
+
+ADRs provide context behind architectural choices and help maintain consistency as the project evolves.
+
+---
+
+## Roadmap
+
+### v0.2
+
+- Multi-layer Cache (Memory + Redis)
+- Metrics Hooks
+- Cache Events
+- Store Decorators
+
+### v0.3
+
+- Stale-While-Revalidate
+- Tracing Hooks
+- Advanced Cache Strategies
+
+---
+
+## Contributing
+
+Contributions, issues, discussions, and pull requests are welcome.
+
+Please read:
+
+```text
+CONTRIBUTING.md
+```
+
+before submitting changes.
+
+---
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License.
+
+See [LICENSE](LICENSE) for details.

@@ -9,3 +9,4 @@ This directory documents the core architectural and design decisions for Go-Cach
 - [ADR-0003: Lazy Expiration in MemoryStore](0003-lazy-expiration.md)
 - [ADR-0004: Package-level Generics and Typed Wrapper](0004-package-generics-and-typed-wrapper.md)
 - [ADR-0005: SingleFlight Strategy](0005-singleflight-strategy.md)
+- [ADR-0006: Cache Interface Boundary](0006-cache-interface-boundary.md)
