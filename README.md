@@ -166,18 +166,18 @@ func main() {
 ```mermaid
 flowchart TD
 
-    A[Request]
-    B[cacheflow.Remember()]
-    C[Cache Lookup]
+    A["Request"]
+    B["cacheflow.Remember()"]
+    C["Cache Lookup"]
 
-    D[Cache Hit]
-    E[Cache Miss]
+    D["Cache Hit"]
+    E["Cache Miss"]
 
-    F[SingleFlight]
-    G[Loader]
-    H[Cache Set]
+    F["SingleFlight"]
+    G["Loader"]
+    H["Cache Set"]
 
-    I[Return Value]
+    I["Return Value"]
 
     A --> B
     B --> C
